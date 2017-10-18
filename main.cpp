@@ -344,13 +344,9 @@ void * t_make_session(void * main_th_data)							// function for session thread
 		else if (ntohs(ETH_header->ether_type) == ETHERTYPE_IP){
 			rcv_packet += sizeof(struct libnet_ethernet_hdr);
 			IP_header = (libnet_ipv4_hdr *)rcv_packet;
-			if(	ETH_header->ether_shost[0]==sender_mac[0] && ETH_header->ether_shost[1]==sender_mac[1] && 
-				ETH_header->ether_shost[2]==sender_mac[2] && ETH_header->ether_shost[3]==sender_mac[3] && 
-				ETH_header->ether_shost[4]==sender_mac[4] && ETH_header->ether_shost[5]==sender_mac[5] && 	
+			if(	memcmp(ETH_header->ether_shost, sender_mac, ETHER_ADDR_LEN) == 0 &&	
 												// src_mac == sender_mac
-				ETH_header->ether_dhost[0]==my_mac[0] && ETH_header->ether_dhost[1]==my_mac[1] &&
-				ETH_header->ether_dhost[2]==my_mac[2] && ETH_header->ether_dhost[3]==my_mac[3] &&
-				ETH_header->ether_dhost[4]==my_mac[4] && ETH_header->ether_dhost[5]==my_mac[5] )		
+				memcmp(ETH_header->ether_dhost, my_mac, ETHER_ADDR_LEN) == 0	)
 												// des_mac == my_mac
 			{
 				memcpy(ETH_header->ether_dhost, target_mac, ETHER_ADDR_LEN);
